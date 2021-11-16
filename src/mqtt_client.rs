@@ -1,8 +1,6 @@
 use rumqttc::{self, AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
-use serde::__private::de::IdentifierDeserializer;
 use std::error::Error;
 use std::time::Duration;
-use tokio::{task, time};
 
 pub struct MqttClient {
     client: AsyncClient,

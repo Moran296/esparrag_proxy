@@ -9,6 +9,6 @@ edition = "2021"
 "serde_json" = "1.0.69"
 "serde" = { version = "1.0.130", features = ["derive"] }
 "tokio" = { version = "1.13.0", features = ["full"] }
-"meta_service" = {path = "../meta_service/"}
+"meta_service" = {git = "https://github.com/Moran296/esparrag_meta_service.git"}
 "warp" = { version = "0.3.2"}
 "rumqttc" = { version = "0.10.0"}
