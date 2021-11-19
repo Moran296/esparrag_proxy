@@ -7,23 +7,40 @@ use warp::{http, Filter};
 async fn get_services(
     service_manager: Arc<ServiceManager>,
 ) -> Result<impl warp::Reply, Infallible> {
-    let services = service_manager.get_services();
+    let services = service_manager.get_services_meta().await;
     Ok(warp::reply::json(&services))
 }
 
 ///post an action for a service
 async fn post_action(
     name: String,
-    act: meta_service::ServiceRequest,
-    _service_manager: Arc<ServiceManager>,
+    action: meta_service::ServiceRequest,
+    service_manager: Arc<ServiceManager>,
 ) -> Result<impl warp::Reply, Infallible> {
-    Ok(warp::reply::with_status(
-        format!("Got it serv {}. action name is {}", name, act.action),
+    let service = service_manager.get_service(&name).await;
+    if service.is_none() {
+        return Ok(warp::reply::with_status(
+            format!("service does not exist!"),
+            http::StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    let mut service = service.unwrap();
+    let res = service.perform(action).await;
+    if res.is_err() {
+        return Ok(warp::reply::with_status(
+            format!("service action failed!. {:?}", res.unwrap_err()),
+            http::StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    return Ok(warp::reply::with_status(
+        format!("Got a good request lets handle!"),
         http::StatusCode::OK,
-    ))
+    ));
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RequestInterface {
     service_manager: Arc<ServiceManager>,
 }
@@ -45,10 +62,10 @@ impl RequestInterface {
         let action_post = warp::post()
             .and(warp::path("service"))
             .and(warp::path::param::<String>())
+            .and(warp::path::end())
             .and(warp::body::content_length_limit(1024 * 16))
             .and(warp::body::json())
             .and(with_service_manager.clone())
-            .and(warp::path::end())
             .and_then(post_action);
 
         let routes = services_get.or(action_post);
