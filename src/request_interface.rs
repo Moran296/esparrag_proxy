@@ -4,20 +4,21 @@ use std::sync::Arc;
 use warp::{http, Filter};
 
 /// get active services
-async fn get_services(
-    service_manager: Arc<ServiceManager>,
-) -> Result<impl warp::Reply, Infallible> {
-    let services = service_manager.get_services_meta().await;
+async fn get_services() -> Result<impl warp::Reply, Infallible> {
+    let services = ServiceManager::get_services_meta().await;
     Ok(warp::reply::json(&services))
 }
 
 ///post an action for a service
 async fn post_action(
-    name: String,
-    action: meta_service::ServiceRequest,
+    service_name: String,
+    action_name: String,
+    action: serde_json::Value,
     service_manager: Arc<ServiceManager>,
 ) -> Result<impl warp::Reply, Infallible> {
-    let service = service_manager.get_service(&name).await;
+    println!("got request service/{}/{}", service_name, action_name);
+
+    let service = service_manager.make_service(&service_name).await;
     if service.is_none() {
         return Ok(warp::reply::with_status(
             format!("service does not exist!"),
@@ -26,16 +27,17 @@ async fn post_action(
     }
 
     let mut service = service.unwrap();
-    let res = service.perform(action).await;
+    let res = service.perform(&action_name, action).await;
     if res.is_err() {
         return Ok(warp::reply::with_status(
-            format!("service action failed!. {:?}", res.unwrap_err()),
+            format!("service action failed!. {}", res.unwrap_err().to_string()),
             http::StatusCode::BAD_REQUEST,
         ));
     }
 
+    let val = res.unwrap();
     return Ok(warp::reply::with_status(
-        format!("Got a good request lets handle!"),
+        format!("{:?}", val),
         http::StatusCode::OK,
     ));
 }
@@ -56,11 +58,11 @@ impl RequestInterface {
         let services_get = warp::get()
             .and(warp::path("services"))
             .and(warp::path::end())
-            .and(with_service_manager.clone())
             .and_then(get_services);
 
         let action_post = warp::post()
             .and(warp::path("service"))
+            .and(warp::path::param::<String>())
             .and(warp::path::param::<String>())
             .and(warp::path::end())
             .and(warp::body::content_length_limit(1024 * 16))

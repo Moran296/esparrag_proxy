@@ -12,3 +12,6 @@ edition = "2021"
 "meta_service" = {git = "https://github.com/Moran296/esparrag_meta_service.git"}
 "warp" = { version = "0.3.2"}
 "rumqttc" = { version = "0.10.0"}
+"uuid" = {version = "0.8.2", features = ["serde", "v4"]}
+"bytes" = {version = "1.1.0"}
+"lazy_static" = {version = "1.4.0"}

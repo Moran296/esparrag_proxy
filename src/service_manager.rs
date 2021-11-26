@@ -1,131 +1,141 @@
-use meta_service::{ServiceMeta, ServiceRequest, ServiceResponse};
-use rumqttc::{self, AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
+use crate::mqtt_client::MqttClient;
+use lazy_static::lazy_static;
+use meta_service::ServiceMeta;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
-// ------------------ MQTT ------------------
-async fn mqtt_polling_function(e_loop: &mut EventLoop) {
-    loop {
-        let event = e_loop.poll().await;
-        if event.is_err() {
-            panic!("Poll error: {:?}", event.err());
-        }
-
-        tokio::spawn(async move {
-            match event.unwrap() {
-                Event::Incoming(Packet::Publish(x)) => {
-                    //ignore my own messages
-                    if x.topic.contains("/proxy/") {
-                        return;
-                    }
-
-                    println!("{:?}", x.payload);
-                }
-                _ => {}
-            }
-        });
-    }
+lazy_static! {
+    static ref SERVICE_DB: Arc<RwLock<HashMap<String, ServiceMeta>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 }
 
-async fn mqtt_init(
-    broker_url: &str,
-    port: u16,
-    client_id: &str,
-) -> Result<AsyncClient, Box<dyn Error>> {
-    let mut opts = MqttOptions::new(client_id, broker_url, port);
-    opts.set_keep_alive(Duration::from_secs(5));
-    opts.set_clean_session(true);
-    let (client, mut e_loop) = AsyncClient::new(opts, 10);
+// ------------------- Service -------------------
 
-    client.subscribe("#", QoS::AtLeastOnce).await.unwrap();
-
-    tokio::spawn(async move {
-        println!("Starting MQTT client");
-        mqtt_polling_function(&mut e_loop).await;
-    });
-
-    client
-        .publish("/proxy/whoareyou", QoS::AtLeastOnce, false, "Hello")
-        .await
-        .unwrap();
-
-    Ok(client)
-}
-
-// ------------------- ServiceManager -------------------
 #[derive(Clone)]
 pub struct ServiceManager {
-    db: Arc<RwLock<HashMap<String, Box<ServiceMeta>>>>,
-    client: AsyncClient,
+    mqtt_client: Arc<MqttClient>,
 }
 
 impl ServiceManager {
     pub async fn new() -> ServiceManager {
-        let mut manager = ServiceManager {
-            db: Arc::new(RwLock::new(HashMap::new())),
-            client: mqtt_init("127.0.0.1", 1883, "service_manager")
-                .await
-                .unwrap(),
-        };
-
-        manager.mock().await;
-        println!("service manager initialized");
-        manager
-    }
-
-    async fn mock(&mut self) {
-        let mock = Box::new(ServiceMeta::mock());
-
-        self.db
-            .write()
-            .await
-            .insert(mock.service_name.clone(), mock);
-    }
-
-    ///get a service to perform actions on
-    pub async fn get_service(&self, name: &str) -> Option<Service> {
-        let services = self.db.read().await;
-        if services.contains_key(name) {
-            return Some(Service {
-                meta: *services[name].clone(),
-            });
+        {
+            let mut db = SERVICE_DB.write().await;
+            db.insert("service_1".to_string(), ServiceMeta::mock());
         }
 
-        None
+        ServiceManager {
+            mqtt_client: Arc::new(MqttClient::new("127.0.0.1", 1883, "proxy").await.unwrap()),
+        }
     }
 
-    ///get all services metadata in a vector
-    pub async fn get_services_meta(&self) -> Vec<ServiceMeta> {
-        let services = self.db.read().await;
-        services
-            .iter()
-            .map(|(_, service)| *service.clone())
-            .collect()
+    pub async fn register_service(service_meta: ServiceMeta) {
+        let mut db = SERVICE_DB.write().await;
+        db.insert(service_meta.service_name.clone(), service_meta);
+    }
+
+    pub async fn get_services_meta() -> Vec<ServiceMeta> {
+        let db = SERVICE_DB.read().await;
+        db.iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    pub async fn make_service(&self, service_name: &str) -> Option<Service> {
+        let db = SERVICE_DB.read().await;
+        db.get(service_name).map(|s| Service {
+            meta: s.clone(),
+            mqtt_client: Arc::clone(&self.mqtt_client),
+        })
     }
 }
 
-// ------------------- Service -------------------
 pub struct Service {
     pub meta: ServiceMeta,
-    //client: AsyncClient,
+    mqtt_client: Arc<MqttClient>,
 }
 
 impl Service {
     pub async fn perform(
         &mut self,
-        req: ServiceRequest,
-    ) -> Result<Option<ServiceResponse>, Box<dyn Error>> {
-        if !self.meta.caters(&req) {
-            return Err("this service does not cater this request")?;
-        }
-
-        // let topic = format!("{}/{}", self.service.service, req.action);
-        // let payload = serde_json::to_string(&req.payload)?;
-        // let packet = Packet::Publish(QoS::AtLeastOnce, false, topic, payload);
-        // let _ = self.client.publish(packet).await?;
-        Ok(None)
+        action: &str,
+        request: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, Box<dyn Error>> {
+        let _ = self.meta.caters(action, &request)?;
+        let v = self
+            .mqtt_client
+            .send_and_wait(&self.meta.service_name, action, request)
+            .await?;
+        Ok(Some(v))
     }
 }
+
+// ------------------- ServiceManager -------------------
+// #[derive(Clone)]
+// pub struct ServiceManager {
+//     db: Arc<RwLock<HashMap<String, Box<ServiceMeta>>>>,
+//     responses: Arc<RwLock<HashMap<Uuid, Option<ServiceResponse>>>>,
+// }
+
+// impl ServiceManager {
+//     pub async fn new() -> ServiceManager {
+//         let responses_hashmap = Arc::new(RwLock::new(HashMap::new()));
+//         let services_hashmap = Arc::new(RwLock::new(HashMap::new()));
+
+//         let mut manager = ServiceManager {
+//             db: services_hashmap.clone(),
+//             responses: responses_hashmap.clone(),
+//             client: mqtt_init(
+//                 "127.0.0.1",
+//                 1883,
+//                 "service_manager",
+//                 responses_hashmap.clone(),
+//                 services_hashmap.clone(),
+//             )
+//             .await
+//             .unwrap(),
+//         };
+
+//         manager.mock().await;
+//         println!("service manager initialized");
+//         manager
+//     }
+
+//     async fn mock(&mut self) {
+//         let mock = Box::new(ServiceMeta::mock());
+
+//         self.db
+//             .write()
+//             .await
+//             .insert(mock.service_name.clone(), mock);
+//     }
+
+//     ///get a service to perform actions on
+//     pub async fn get_service(&self, name: &str) -> Option<Service> {
+//         let services = self.db.read().await;
+//         if services.contains_key(name) {
+//             return Some(Service {
+//                 meta: *services[name].clone(),
+//                 responses: self.responses.clone(),
+//                 client: self.client.clone(),
+//             });
+//         }
+
+//         None
+//     }
+
+//     ///get all services metadata in a vector
+//     pub async fn get_services_meta(&self) -> Vec<ServiceMeta> {
+//         let services = self.db.read().await;
+//         services
+//             .iter()
+//             .map(|(_, service)| *service.clone())
+//             .collect()
+//     }
+// }
+
+// // ------------------- Service -------------------
+// pub struct Service {
+//     pub meta: ServiceMeta,
+//     responses: Arc<RwLock<HashMap<Uuid, Option<ServiceResponse>>>>,
+//     client: AsyncClient,
+// }

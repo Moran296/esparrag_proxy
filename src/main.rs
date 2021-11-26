@@ -4,6 +4,7 @@ mod request_interface;
 use request_interface::RequestInterface;
 mod service_manager;
 use service_manager::ServiceManager;
+mod mqtt_client;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
